@@ -23,6 +23,9 @@ from typing import Dict, List, Optional, Tuple
 from config import config
 
 os.environ["HF_HOME"] = config.HF_HOME
+os.environ["HF_ENDPOINT"] = config.HF_ENDPOINT
+os.environ["TRANSFORMERS_OFFLINE"] = "1"   # 强制离线，不联网
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.retrievers import BM25Retriever
@@ -37,10 +40,63 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_classic.chains import RetrievalQA
 from langchain_classic.retrievers.ensemble import EnsembleRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import CrossEncoder
+
+
+# ============================================================================
+# 0. LLM 工厂 — 根据 config 创建对应 provider 的 LLM 实例
+# ============================================================================
+def _create_llm(temperature: Optional[float] = None) -> object:
+    """
+    创建 LLM 实例，provider 由环境变量 RAG_LLM_PROVIDER 决定。
+
+    Provider → 对应类:
+        ollama    → ChatOllama      (本地，默认)
+        openai    → ChatOpenAI      (需 RAG_LLM_API_KEY)
+        anthropic → ChatAnthropic   (需 RAG_LLM_API_KEY)
+        deepseek  → ChatOpenAI      (兼容 OpenAI 协议，base_url 指向 DeepSeek)
+    """
+    provider = config.LLM_PROVIDER.lower()
+    temp = temperature if temperature is not None else config.LLM_TEMPERATURE
+
+    if provider == "ollama":
+        return ChatOllama(
+            model=config.LLM_MODEL,
+            base_url=config.LLM_BASE_URL,
+            temperature=temp,
+        )
+    elif provider == "openai":
+        return ChatOpenAI(
+            model=config.LLM_MODEL,
+            api_key=config.LLM_API_KEY or os.getenv("OPENAI_API_KEY", ""),
+            temperature=temp,
+        )
+    elif provider == "anthropic":
+        return ChatAnthropic(
+            model=config.LLM_MODEL,
+            api_key=config.LLM_API_KEY or os.getenv("ANTHROPIC_API_KEY", ""),
+            temperature=temp,
+        )
+    elif provider == "deepseek":
+        return ChatOpenAI(
+            model=config.LLM_MODEL,
+            api_key=config.LLM_API_KEY or os.getenv("DEEPSEEK_API_KEY", ""),
+            base_url=config.LLM_BASE_URL or "https://api.deepseek.com/v1",
+            temperature=temp,
+        )
+    else:
+        logger.error(f"未知 LLM provider: {provider}，回退到 Ollama")
+        return ChatOllama(
+            model=config.LLM_MODEL,
+            base_url=config.LLM_BASE_URL,
+            temperature=temp,
+        )
+
 
 # --- 日志配置 ---
 logger = logging.getLogger("medical_rag")
@@ -494,13 +550,14 @@ def run_incremental_update(vectorstore: Chroma) -> Dict:
 # ============================================================================
 # 3. 查询重写
 # ============================================================================
-def rewrite_query(user_query: str, history: List[str]) -> str:
+def rewrite_query(user_query: str, history: List[str], llm: object = None) -> str:
     """
     增强版查询重写 - 处理多轮对话中的指代消解
 
     Args:
         user_query: 用户当前提问
-        history: 对话历史列表 (格式: ["用户: xxx", "AI: xxx", ...])
+        history: 对话历史列表
+        llm: 可选的 LLM 实例（不传则用全局配置创建）
 
     Returns:
         str: 重写后的完整问题
@@ -508,7 +565,6 @@ def rewrite_query(user_query: str, history: List[str]) -> str:
     if not history:
         return user_query
 
-    # 保留最近 N 条记录
     recent = history[-config.HISTORY_MAX_ENTRIES :] if len(history) > config.HISTORY_MAX_ENTRIES else history
     history_str = "\n".join(recent)
 
@@ -531,11 +587,7 @@ def rewrite_query(user_query: str, history: List[str]) -> str:
 请直接输出重写后的完整问题（不要加任何解释，不要加引号）："""
 
     try:
-        temp_llm = ChatOllama(
-            model=config.LLM_MODEL,
-            base_url=config.LLM_BASE_URL,
-            temperature=0.1,
-        )
+        temp_llm = llm if llm is not None else _create_llm(temperature=0.1)
         response = temp_llm.invoke(rewrite_prompt)
         rewritten = response.content.strip().strip("\"'")
 
@@ -556,6 +608,21 @@ def _create_embeddings() -> HuggingFaceEmbeddings:
         "device": config.EMBEDDING_DEVICE,
         "local_files_only": True,
     }
+    # 找到本地 snapshot 路径，直接用绝对路径加载，绕开 HF 缓存
+    hub_dir = os.path.join(config.HF_HOME, "hub")
+    model_dir_name = f"models--{config.EMBEDDING_MODEL.replace('/', '--')}"
+    snapshots_dir = os.path.join(hub_dir, model_dir_name, "snapshots")
+    if os.path.isdir(snapshots_dir):
+        subdirs = os.listdir(snapshots_dir)
+        if subdirs:
+            local_model_path = os.path.join(snapshots_dir, subdirs[0])
+            logger.info(f"从本地路径加载 embedding: {local_model_path}")
+            return HuggingFaceEmbeddings(
+                model_name=local_model_path,
+                cache_folder=os.path.join(config.HF_HOME, "hub"),
+                model_kwargs=model_kwargs,
+            )
+    # 回退
     return HuggingFaceEmbeddings(
         model_name=config.EMBEDDING_MODEL,
         cache_folder=os.path.join(config.HF_HOME, "hub"),
@@ -839,11 +906,7 @@ def init_rag(
         retriever = vectorstore.as_retriever()
 
     # --- 步骤3: 配置 LLM ---
-    llm = ChatOllama(
-        model=config.LLM_MODEL,
-        base_url=config.LLM_BASE_URL,
-        temperature=config.LLM_TEMPERATURE,
-    )
+    llm = _create_llm()
 
     # --- 步骤4: Prompt 模板 ---
     template = """根据以下医学文献回答问题。如果上下文无相关信息，回答"未找到相关信息"。
@@ -890,6 +953,82 @@ def init_rag_streaming(
         docs = retriever.invoke(query)              # 获取来源文档
         for chunk in chain.stream(query):           # 流式生成
             print(chunk, end="")
+    """
+
+
+def init_retriever(use_ocr: bool = False, use_hybrid: bool = True):
+    """
+    仅初始化检索器（不包含 LLM 链），供前端动态切换 LLM 使用。
+
+    Returns:
+        retriever: 检索器对象
+    """
+    global cached_documents
+
+    logger.info("=" * 40)
+    logger.info("初始化检索器...")
+    config.ensure_dirs()
+    start_time = datetime.now()
+
+    # --- 加载或构建向量数据库 ---
+    vectorstore = None
+    documents = None
+
+    if check_cache_valid():
+        logger.info("检测到有效缓存，直接加载")
+        try:
+            vectorstore, embeddings = load_cached_vectorstore()
+            update_summary = run_incremental_update(vectorstore)
+            if any(v > 0 for v in update_summary.values()):
+                logger.info(f"增量更新: 新增{update_summary['new']}, 修改{update_summary['modified']}")
+
+            if use_hybrid and cached_documents is None:
+                logger.info("重新加载文档用于混合检索...")
+                all_documents = []
+                pdf_files = [f for f in os.listdir(config.PDF_FOLDER) if f.lower().endswith(".pdf")]
+                for pdf_file in pdf_files:
+                    full_path = os.path.join(config.PDF_FOLDER, pdf_file)
+                    try:
+                        loader = PyPDFLoader(full_path)
+                        all_documents.extend(loader.load())
+                    except Exception as e:
+                        logger.warning(f"加载 {pdf_file} 失败: {e}")
+                cached_documents = all_documents
+            documents = cached_documents
+        except Exception as e:
+            logger.warning(f"加载缓存失败: {e}，将重新构建")
+            vectorstore, embeddings, documents = process_pdfs_and_build_vectorstore(use_ocr)
+            if vectorstore is None:
+                return None
+    else:
+        logger.info("未检测到有效缓存，开始构建...")
+        vectorstore, embeddings, documents = process_pdfs_and_build_vectorstore(use_ocr)
+        if vectorstore is None:
+            return None
+
+    # --- 构建检索器 ---
+    if use_hybrid and documents and len(documents) > 0:
+        logger.info("启用混合检索 + 重排序模式")
+        retriever = create_hybrid_retriever_with_rerank(vectorstore, documents)
+    else:
+        logger.info("使用标准向量检索模式")
+        retriever = vectorstore.as_retriever()
+
+    init_time = datetime.now() - start_time
+    logger.info(f"检索器初始化完成，总耗时 {init_time.total_seconds():.2f} 秒")
+
+    return retriever
+
+
+# ============================================================================
+# 8. 流式 RAG (LCEL 链)
+# ============================================================================
+def init_rag_streaming(
+    use_ocr: bool = False,
+    use_hybrid: bool = True,
+) -> Optional[Tuple[object, object]]:
+    """
+    初始化支持流式输出的 RAG 系统。返回 (retriever, streaming_chain)。
     """
     global cached_documents
 
@@ -953,11 +1092,7 @@ def init_rag_streaming(
         retriever = vectorstore.as_retriever()
 
     # --- 步骤3: 配置 LLM (streaming) ---
-    llm = ChatOllama(
-        model=config.LLM_MODEL,
-        base_url=config.LLM_BASE_URL,
-        temperature=config.LLM_TEMPERATURE,
-    )
+    llm = _create_llm()
 
     # --- 步骤4: Prompt 模板 ---
     template = """根据以下医学文献回答问题。如果上下文无相关信息，回答"未找到相关信息"。

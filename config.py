@@ -24,6 +24,7 @@ class Config:
     CACHE_INFO_FILE = str(BASE_DIR / "chroma_db" / "cache_info.txt")
     PDF_FOLDER = str(BASE_DIR / "bing_pdfs")
     HF_HOME = str(BASE_DIR / "my_models")
+    HF_ENDPOINT = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")  # 国内镜像
 
     # ==========================================================================
     # Embedding 模型
@@ -32,11 +33,15 @@ class Config:
     EMBEDDING_DEVICE = os.getenv("RAG_EMBEDDING_DEVICE", "cpu")  # cpu / cuda
 
     # ==========================================================================
-    # LLM 配置 (Ollama)
+    # LLM 配置 (支持多种 Provider，默认 Ollama)
     # ==========================================================================
+    # provider: ollama | openai | anthropic | deepseek
+    LLM_PROVIDER = os.getenv("RAG_LLM_PROVIDER", "ollama")
     LLM_MODEL = os.getenv("RAG_LLM_MODEL", "qwen3.5:4b")
     LLM_BASE_URL = os.getenv("RAG_LLM_BASE_URL", "http://localhost:11434")
     LLM_TEMPERATURE = float(os.getenv("RAG_LLM_TEMPERATURE", "0.1"))
+    # API Key (云端 provider 使用)
+    LLM_API_KEY = os.getenv("RAG_LLM_API_KEY", "")
 
     # ==========================================================================
     # 文本切分配置
@@ -87,6 +92,7 @@ class Config:
         print("📋 当前配置:")
         print(f"  PDF目录:      {cls.PDF_FOLDER}")
         print(f"  向量库目录:   {cls.VECTOR_STORE_DIR}")
+        print(f"  LLM Provider: {cls.LLM_PROVIDER}")
         print(f"  LLM模型:      {cls.LLM_MODEL}")
         print(f"  LLM地址:      {cls.LLM_BASE_URL}")
         print(f"  Embedding:    {cls.EMBEDDING_MODEL}")
