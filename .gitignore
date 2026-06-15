@@ -1,0 +1,35 @@
+# Secrets
+.env
+*.key
+*secret*
+*API*.py
+langsmith*
+
+# Model caches
+my_models/
+models/
+
+# Vector database
+chroma_db/
+
+# PDF files
+bing_pdfs/
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

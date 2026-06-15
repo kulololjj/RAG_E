@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Project specific
+chroma_db/
+my_models/
+bing_pdfs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+test*.py
+apptest.py

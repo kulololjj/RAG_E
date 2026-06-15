@@ -1,0 +1,47 @@
+# ============================================================================
+# 医疗 RAG 系统 - 依赖清单
+# 安装: pip install -r requirements.txt
+# ============================================================================
+
+# --- LangChain 全家桶 ---
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-core>=0.3.0
+langchain-ollama>=0.1.0
+langchain-huggingface>=0.1.0
+langchain-classic>=0.1.0
+langchain-text-splitters>=0.3.0
+
+# --- 向量数据库 ---
+chromadb>=0.5.0
+
+# --- 混合检索 + 重排序 ---
+rank-bm25>=0.2.2
+sentence-transformers>=2.7.0
+
+# --- PDF 处理 ---
+pypdf>=4.0.0
+
+# --- LLM (Ollama) ---
+# ollama 客户端由 langchain-ollama 自动安装
+
+# --- REST API ---
+fastapi>=0.110.0
+uvicorn>=0.27.0
+python-multipart>=0.0.9
+
+# --- Web UI ---
+streamlit>=1.30.0
+
+# --- OCR (扫描版 PDF) ---
+pytesseract>=0.3.10
+pdf2image>=1.16.0
+Pillow>=9.0.0
+
+# --- 评估 (可选) ---
+ragas>=0.1.0
+datasets>=2.14.0
+
+# --- 工具 ---
+python-dotenv>=1.0.0
+tqdm>=4.64.0

@@ -1,0 +1,33 @@
+# ============================================================================
+# 医疗 RAG 系统 - Docker Compose (Ollama 由宿主机提供)
+# ============================================================================
+# 启动:  docker compose up -d
+# 查看:  docker compose logs -f webui
+# 停止:  docker compose down
+# ============================================================================
+
+services:
+  # =========================================================================
+  # Streamlit Web UI (主服务)
+  # =========================================================================
+  webui:
+    build: .
+    container_name: rag-webui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./bing_pdfs:/app/bing_pdfs
+      - ./chroma_db:/app/chroma_db
+      - ./my_models:/app/my_models
+    environment:
+      - RAG_LLM_BASE_URL=http://host.docker.internal:11434
+      - RAG_LLM_MODEL=qwen3.5:4b
+      - RAG_EMBEDDING_DEVICE=cpu
+      - RAG_RETRIEVAL_K=8
+      - RAG_RERANK_TOP_N=4
+      - RAG_RERANK_ENABLED=false
+      - STREAMLIT_SERVER_HEADLESS=true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
