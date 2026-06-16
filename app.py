@@ -1,6 +1,6 @@
 """
 医疗 RAG 助手 - Streamlit Web UI
-支持侧边栏切换 LLM Provider（Ollama / OpenAI / Anthropic / DeepSeek）
+支持侧边栏切换 LLM Provider + 会话持久化 + 多轮推理
 """
 import os
 
@@ -8,6 +8,15 @@ import streamlit as st
 from langchain_anthropic import ChatAnthropic
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
+
+from memory import (
+    build_chat_prompt,
+    delete_session,
+    list_sessions,
+    load_session,
+    new_session_id,
+    save_session,
+)
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
@@ -83,6 +92,55 @@ with st.sidebar:
         st.info("👆 配置后提问即自动连接")
 
     st.divider()
+    st.divider()
+    st.subheader("💬 会话管理")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("➕ 新对话", use_container_width=True):
+            st.session_state.session_id = new_session_id()
+            st.session_state.session_title = "新对话"
+            st.session_state.messages = []
+            st.session_state.conversation_history = []
+            st.rerun()
+    with col2:
+        if st.button("🗑️ 删当前", use_container_width=True):
+            delete_session(st.session_state.session_id)
+            st.session_state.session_id = new_session_id()
+            st.session_state.messages = []
+            st.session_state.conversation_history = []
+            st.rerun()
+
+    # 历史会话列表
+    all_sessions = list_sessions()
+    if all_sessions:
+        session_options = {s["id"]: f"{s['title'][:20]} ({s['messages']}条)" for s in all_sessions}
+        selected = st.selectbox(
+            "历史会话",
+            options=list(session_options.keys()),
+            format_func=lambda x: session_options[x],
+            key="session_selector",
+        )
+        if st.button("📂 加载选中会话", use_container_width=True):
+            data = load_session(selected)
+            if data:
+                st.session_state.session_id = data["id"]
+                st.session_state.session_title = data.get("title", "")
+                st.session_state.messages = data.get("messages", [])
+                st.session_state.conversation_history = data.get("history", [])
+                st.rerun()
+
+    st.divider()
+    st.caption(f"📝 当前: {st.session_state.get('session_title','')[:20]}")
+
+    st.divider()
+
+    if st.button("🔄 重新索引 PDF", use_container_width=True):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.rerun()
+
+    st.caption("下载新 PDF 后点上方按钮刷新")
     st.caption("本地 Ollama 需先 ollama serve")
     st.caption("云端 API 需有效的 API Key")
 
@@ -125,7 +183,23 @@ def _make_llm():
 def build_llm_chain(retriever):
     llm = _make_llm()
 
-    template = """根据以下医学文献回答问题。如果上下文无相关信息，回答"未找到相关信息"。
+    # 多轮推理：把最近 3 轮对话历史注入 prompt
+    chat_history = st.session_state.get("conversation_history", [])
+    chat_context = build_chat_prompt(chat_history, max_exchanges=3)
+
+    if chat_context:
+        template = f"""根据以下医学文献和对话历史回答问题。注意结合前文提到的诊断、药物等信息，给出连贯回答。如果上下文无相关信息，回答"未找到相关信息"。
+
+对话历史：
+{chat_context}
+
+上下文：
+{{context}}
+
+问题：{{question}}
+回答："""
+    else:
+        template = """根据以下医学文献回答问题。如果上下文无相关信息，回答"未找到相关信息"。
 
 上下文：
 {context}
@@ -169,6 +243,18 @@ if "sources" not in st.session_state:
     st.session_state.sources = []
 if "conversation_history" not in st.session_state:
     st.session_state.conversation_history = []
+if "session_id" not in st.session_state:
+    # 加载最近一次会话，否则新建
+    sessions = list_sessions()
+    if sessions:
+        last = load_session(sessions[0]["id"])
+        st.session_state.messages = last.get("messages", [])
+        st.session_state.conversation_history = last.get("history", [])
+        st.session_state.session_id = sessions[0]["id"]
+        st.session_state.session_title = last.get("title", "新对话")
+    else:
+        st.session_state.session_id = new_session_id()
+        st.session_state.session_title = "新对话"
 
 # ==========================================
 # 6. 主界面
@@ -236,12 +322,24 @@ if query := st.chat_input("请输入您的医学问题..."):
             if len(history) > 8:
                 st.session_state.conversation_history = history[-8:]
 
+            # 自动生成会话标题（取第一次提问前 20 字）
+            if len(history) == 2:
+                st.session_state.session_title = query[:20]
+
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": full_response,
                 "sources": docs,
             })
             st.session_state.sources = docs
+
+            # 持久化保存
+            save_session(
+                st.session_state.session_id,
+                st.session_state.conversation_history,
+                st.session_state.messages,
+                st.session_state.get("session_title", "新对话"),
+            )
 
         except Exception as e:
             import traceback

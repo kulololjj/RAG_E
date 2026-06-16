@@ -12,6 +12,9 @@ models/
 # Vector database
 chroma_db/
 
+# Conversations
+conversations/
+
 # PDF files
 bing_pdfs/
 *.pdf

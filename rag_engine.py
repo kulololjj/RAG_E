@@ -83,10 +83,13 @@ def _create_llm(temperature: Optional[float] = None) -> object:
             temperature=temp,
         )
     elif provider == "deepseek":
+        ds_url = config.LLM_BASE_URL
+        if provider != config.LLM_PROVIDER or "localhost" in ds_url:
+            ds_url = "https://api.deepseek.com/v1"
         return ChatOpenAI(
             model=config.LLM_MODEL,
             api_key=config.LLM_API_KEY or os.getenv("DEEPSEEK_API_KEY", ""),
-            base_url=config.LLM_BASE_URL or "https://api.deepseek.com/v1",
+            base_url=ds_url,
             temperature=temp,
         )
     else:

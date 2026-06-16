@@ -280,12 +280,11 @@ class EvalRunner:
             elapsed = time.time() - start
             total_time += elapsed
 
-            # 关键词 (如果未提供，自动从问题中提取)
-            keywords = (
-                reference_keywords_list[i - 1]
-                if reference_keywords_list
-                else self._extract_keywords(question)
-            )
+            # 关键词 (如果未提供或不够，自动从问题中提取)
+            if reference_keywords_list and i - 1 < len(reference_keywords_list):
+                keywords = reference_keywords_list[i - 1]
+            else:
+                keywords = self._extract_keywords(question)
 
             hit_rate = self.builtin.context_hit_rate(question, contexts, keywords)
             coverage = self.builtin.answer_coverage(answer, contexts)
