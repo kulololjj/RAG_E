@@ -101,6 +101,72 @@ def _create_llm(temperature: Optional[float] = None) -> object:
         )
 
 
+# ============================================================================
+# 0.5 置信度门控 — 检索后先判断是否能回答
+# ============================================================================
+def check_relevance(
+    question: str,
+    docs: List[Document],
+    llm: object = None,
+    threshold: float = 0.5,
+) -> Dict:
+    """
+    相关性门控：用精简 prompt 快速判断检索结果能否支持回答。
+
+    返回 {"can_answer": bool, "confidence": float, "reason": str}
+    """
+    if not docs:
+        return {"can_answer": False, "confidence": 0.0, "reason": "未检索到任何文档"}
+
+    # 截取文档摘要（每篇最多 150 字）
+    doc_summaries = []
+    for i, doc in enumerate(docs[:5], 1):
+        content = doc.page_content[:150].replace("\n", " ")
+        doc_summaries.append(f"[{i}] {content}")
+    context_preview = "\n".join(doc_summaries)
+
+    check_prompt = f"""你是一个医疗知识库的审核员。你的任务是判断以下检索到的医学文献，能否回答用户的问题。
+
+检索到的文献摘要：
+{context_preview}
+
+用户问题：{question}
+
+请判断：
+- 如果文献内容与问题相关，且包含可能回答该问题的信息，回答 YES
+- 如果文献内容与问题无关，或信息不足以回答，回答 NO
+- 如果文献部分相关但不完整，回答 PARTIAL
+
+请严格只输出一个词（YES/NO/PARTIAL），然后输出 0-100 的置信度分数，最后可加一句简短解释。
+格式：YES|85|文献提到了该疾病的定义和症状"""
+
+    try:
+        gate_llm = llm if llm is not None else _create_llm(temperature=0.0)
+        response = gate_llm.invoke(check_prompt)
+        result_text = response.content.strip()
+
+        # 解析输出
+        parts = result_text.split("|")
+        verdict = parts[0].strip().upper() if len(parts) > 0 else "NO"
+        confidence = float(parts[1].strip()) / 100.0 if len(parts) > 1 else 0.0
+        reason = parts[2].strip() if len(parts) > 2 else ""
+
+        can_answer = verdict in ("YES", "PARTIAL") and confidence >= threshold
+        logger.info(
+            f"相关性门控: verdict={verdict}, confidence={confidence:.0%}, "
+            f"can_answer={can_answer}"
+        )
+        return {
+            "can_answer": can_answer,
+            "confidence": confidence,
+            "verdict": verdict,
+            "reason": reason,
+        }
+    except Exception as e:
+        logger.warning(f"相关性门控失败: {e}，默认通过")
+        return {"can_answer": True, "confidence": 0.5, "verdict": "ERROR", "reason": str(e)}
+
+
 # --- 日志配置 ---
 logger = logging.getLogger("medical_rag")
 logger.setLevel(logging.DEBUG)

@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 
-from rag_engine import init_retriever, rewrite_query
+from rag_engine import check_relevance, init_retriever, rewrite_query
 
 # ==========================================
 # 1. 页面配置
@@ -306,16 +306,33 @@ if query := st.chat_input("请输入您的医学问题..."):
             with st.spinner("🔍 检索中..."):
                 docs = retriever.invoke(rewritten)
 
-            chain = build_llm_chain(retriever)
+            # 置信度门控：检索后先判断能否回答
+            gate_llm = _make_llm()
+            relevance = check_relevance(rewritten, docs, llm=gate_llm, threshold=0.4)
             st.session_state.llm_connected = True
 
-            response_placeholder = st.empty()
-            full_response = ""
-            with st.spinner("🤔 生成中..."):
-                for chunk in chain.stream(rewritten):
-                    full_response += chunk
-                    response_placeholder.markdown(full_response + "▌")
-            response_placeholder.markdown(full_response)
+            if not relevance.get("can_answer", True):
+                # 拒答
+                confidence_pct = relevance.get("confidence", 0) * 100
+                reason = relevance.get("reason", "")
+                full_response = (
+                    f"⚠️ 基于现有知识库，该问题无法可靠回答。\n\n"
+                    f"**置信度**：{confidence_pct:.0f}%\n"
+                    f"**原因**：{reason or '检索到的文献与此问题关联度低'}"
+                )
+                response_placeholder = st.empty()
+                response_placeholder.markdown(full_response)
+            else:
+                # 通过门控，生成回答
+                chain = build_llm_chain(retriever)
+
+                response_placeholder = st.empty()
+                full_response = ""
+                with st.spinner("🤔 生成中..."):
+                    for chunk in chain.stream(rewritten):
+                        full_response += chunk
+                        response_placeholder.markdown(full_response + "▌")
+                response_placeholder.markdown(full_response)
 
             history.append(f"用户: {query}")
             history.append(f"AI: {full_response}")
